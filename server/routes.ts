@@ -33,17 +33,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const data = result.result as any;
       
+      // Helper function to get string from array or string
+      const getStringFromArrayOrString = (value: any): string => {
+        if (Array.isArray(value)) {
+          return value[0] || "";
+        }
+        return value || "";
+      };
+
       const videoData = {
         id: data.aweme_id || data.id || Date.now().toString(),
         title: data.desc || data.title || "TikTok Video",
         author: data.author?.nickname || data.author?.unique_id || data.author?.username || "Unknown",
         duration: data.duration ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, '0')}` : "0:00",
         views: data.statistics?.play_count ? formatViews(data.statistics.play_count) : "0",
-        thumbnail: data.video?.cover || data.video?.originCover || data.cover || data.thumbnail || "",
+        thumbnail: getStringFromArrayOrString(data.video?.cover || data.video?.originCover || data.cover || data.thumbnail),
         downloadUrls: {
-          hd: data.video?.playAddr?.[0] || data.video?.playAddr || data.video?.downloadAddr || data.video || "",
-          sd: data.video?.playAddr?.[1] || data.video?.playAddr?.[0] || data.video?.downloadAddr || data.video || "",
-          audio: data.music?.playUrl || data.music?.downloadUrl || data.audio || ""
+          hd: getStringFromArrayOrString(data.video?.playAddr?.[0] || data.video?.playAddr || data.video?.downloadAddr || data.video),
+          sd: getStringFromArrayOrString(data.video?.playAddr?.[1] || data.video?.playAddr?.[0] || data.video?.downloadAddr || data.video),
+          audio: getStringFromArrayOrString(data.music?.playUrl || data.music?.downloadUrl || data.audio)
         }
       };
 
