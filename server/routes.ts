@@ -274,36 +274,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Stream the video content with proper download headers
-      try {
-        const videoResponse = await fetch(downloadUrl);
-        
-        if (!videoResponse.ok) {
-          throw new Error(`Failed to fetch video: ${videoResponse.status}`);
-        }
-
-        // Set proper headers to force download
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-        res.setHeader('Content-Type', contentType);
-        
-        // Set content length if available
-        const contentLength = videoResponse.headers.get('content-length');
-        if (contentLength) {
-          res.setHeader('Content-Length', contentLength);
-        }
-
-        // Stream the video content directly to the response
-        if (videoResponse.body) {
-          videoResponse.body.pipe(res);
-        } else {
-          throw new Error('No video content received');
-        }
-      } catch (streamError) {
-        console.error("Error streaming video:", streamError);
-        res.status(500).json({
-          error: "Failed to stream video content. Please try again.",
-        });
-      }
+      // Return the direct download URL for client-side download
+      res.json({
+        downloadUrl: downloadUrl,
+        filename: filename,
+        contentType: contentType,
+      });
     } catch (error) {
       console.error("Error in /api/download route (outer try-catch):", error);
       res.status(500).json({
