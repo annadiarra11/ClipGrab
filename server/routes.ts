@@ -52,21 +52,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       data = result.result as any;
       
-      // Debug what's actually in the full response
-      console.log("DEBUG - API Response keys:", Object.keys(data));
-      console.log("DEBUG - Statistics:", data.statistics);
-      console.log("DEBUG - Video info:", { 
-        duration: data.duration,
-        video_duration: data.video_duration,
-        createTime: data.createTime,
-        create_time: data.create_time
-      });
-      console.log("DEBUG - Cover info:", {
-        cover: data.cover,
-        dynamicCover: data.dynamicCover, 
-        originCover: data.originCover,
-        thumbnail: data.thumbnail
-      });
+      // Debug the video and music objects to see what's inside
+      console.log("DEBUG - Video object details:", JSON.stringify(data.video, null, 2));
+      console.log("DEBUG - Music object details:", JSON.stringify(data.music, null, 2));
 
       // Extract video URLs - support multiple API versions
       let hdUrl = "";
@@ -121,27 +109,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         duration = "0:30"; // Realistic TikTok default
       }
 
-      // Extract view count - try all possible locations
-      let viewCount = data.statistics?.play_count ||
-                     data.statistics?.playCount ||
-                     data.play_count ||
-                     data.playCount ||
-                     data.stats?.play_count ||
-                     data.stats?.playCount ||
-                     0;
-
-      if (viewCount > 0) {
-        views = formatViews(viewCount);
-      } else {
-        // If no view count available, estimate from likes if available
-        const likeCount = data.statistics?.likeCount || data.statistics?.like_count || 0;
-        if (likeCount > 0) {
-          // Estimate views (typical ratio 15:1)
-          views = formatViews(likeCount * 15);
-        } else {
-          views = formatViews(Math.floor(Math.random() * 100000 + 50000)); // Realistic range
-        }
-      }
+      // Extract view count - we can see playCount is available in statistics
+      const viewCount = data.statistics?.playCount || data.statistics?.play_count || 0;
+      views = formatViews(viewCount);
 
       const videoData = {
         id: String(data.aweme_id || data.id || Date.now()),
