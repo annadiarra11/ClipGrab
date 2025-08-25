@@ -21,11 +21,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // }
 
       // Extract video data using TikTok API
+      console.log("Attempting to extract from URL:", url);
+      
       const result = await TikTokScraper.Downloader(url, {
-        version: "v1" // Go back to v1 for reliability
+        version: "v3" // Try v3 for better compatibility
       });
 
+      console.log("TikTok API result:", JSON.stringify(result, null, 2));
+
       if (!result.status || !result.result) {
+        console.error("TikTok API failed:", result);
         return res.status(400).json({ 
           error: "Failed to extract video data. Please check the URL and try again." 
         });
