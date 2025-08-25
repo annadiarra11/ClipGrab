@@ -14,15 +14,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { url } = downloadRequestSchema.pick({ url: true }).parse(req.body);
       
-      // Check cache first
-      const cached = await storage.getCachedVideoData(url);
-      if (cached) {
-        return res.json(cached);
-      }
+      // Skip cache for debugging - get fresh data
+      // const cached = await storage.getCachedVideoData(url);
+      // if (cached) {
+      //   return res.json(cached);
+      // }
 
       // Extract video data using TikTok API
       const result = await TikTokScraper.Downloader(url, {
-        version: "v3" // Try v3 for better metadata
+        version: "v1" // Go back to v1 for reliability
       });
 
       if (!result.status || !result.result) {
@@ -130,16 +130,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Stream the video file
       const fetch = (await import('node-fetch')).default;
-      const response = await fetch(downloadUrl);
+      
+      console.log("Downloading from URL:", downloadUrl);
+      
+      const response = await fetch(downloadUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+      });
       
       if (!response.ok) {
+        console.error(`Download failed: ${response.status} ${response.statusText}`);
         throw new Error(`Failed to fetch video: ${response.statusText}`);
       }
+
+      const contentLength = response.headers.get('content-length');
+      console.log("Content length:", contentLength);
 
       // Set appropriate headers for download
       res.setHeader('Content-Type', contentType);
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      
+      if (contentLength) {
+        res.setHeader('Content-Length', contentLength);
+      }
 
       // Stream the response
       if (response.body) {
