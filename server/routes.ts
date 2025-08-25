@@ -3,9 +3,11 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { videoDataSchema, downloadRequestSchema } from "@shared/schema";
 import { z } from "zod";
+import { execFile } from "child_process";
+import util from "util"; // For promisify
 
-// TikTok API library - Using '@tobyg74/tiktok-api-dl'
-import { Downloader } from "@tobyg74/tiktok-api-dl";
+// Promisify execFile for async/await usage
+const execFilePromise = util.promisify(execFile);
 
 // Helper to safely get nested property with a default value
 const getProp = (obj: any, path: string, defaultValue: any = undefined) => {
@@ -22,57 +24,39 @@ const getProp = (obj: any, path: string, defaultValue: any = undefined) => {
     : current;
 };
 
-// Helper function to extract thumbnail URL robustly
-// Adjusted to tiktok-dl's common output structure
+// Helper function to extract thumbnail URL from yt-dlp output
 const getThumbnail = (data: any): string => {
-  // Prioritize video cover URLs
-  const coverUrls =
-    getProp(data, "cover", []) || getProp(data, "thumbnail", []);
-  if (Array.isArray(coverUrls) && coverUrls.length > 0) {
-    return coverUrls[0]; // Take the first available cover URL
-  }
-
-  // tiktok-dl often provides a single 'cover_url' or similar directly
-  const directCover =
-    getProp(data, "cover_url", "") || getProp(data, "display_url", "");
   if (
-    directCover &&
-    typeof directCover === "string" &&
-    directCover.startsWith("http")
+    data.thumbnails &&
+    Array.isArray(data.thumbnails) &&
+    data.thumbnails.length > 0
   ) {
-    return directCover;
+    // yt-dlp usually provides multiple thumbnails, often sorted by quality/size.
+    // Try to get a reasonably sized one, or the last (often highest res)
+    const bestThumbnail =
+      data.thumbnails.find((t: any) => t.width && t.width >= 720) ||
+      data.thumbnails.find((t: any) => t.width && t.width >= 480) ||
+      data.thumbnails[data.thumbnails.length - 1]; // Fallback to the largest available
+    if (bestThumbnail && bestThumbnail.url) {
+      return bestThumbnail.url;
+    }
   }
-
-  // Fallback to author avatar if no video cover is found (less ideal)
-  const authorAvatar = getProp(data, "author.avatar", "");
+  // Fallback to a generic 'thumbnail' or 'cover' if present at the top level
+  const directThumbnail =
+    getProp(data, "thumbnail", "") || getProp(data, "cover", "");
   if (
-    authorAvatar &&
-    typeof authorAvatar === "string" &&
-    authorAvatar.startsWith("http")
+    directThumbnail &&
+    typeof directThumbnail === "string" &&
+    directThumbnail.startsWith("http")
   ) {
-    return authorAvatar;
+    return directThumbnail;
   }
-
-  return ""; // Return empty string if no suitable thumbnail is found
+  return "";
 };
 
-// Helper function to extract duration and format it
-// Adjusted to tiktok-dl's common output structure
+// Helper function to extract duration from yt-dlp output and format it
 const getDuration = (data: any): string => {
-  let durationSeconds = 0;
-
-  // tiktok-dl often provides duration in seconds directly or in milliseconds under 'duration' or 'video_info.duration'
-  durationSeconds =
-    getProp(data, "duration", 0) || getProp(data, "video_info.duration", 0); // Check for nested duration
-
-  // If the value is very large, it's likely milliseconds, convert to seconds
-  if (durationSeconds > 10000) {
-    // Using a higher threshold to avoid converting already-seconds values
-    durationSeconds = Math.floor(durationSeconds / 1000);
-  } else {
-    durationSeconds = Math.floor(durationSeconds); // Assume it's already in seconds or small value
-  }
-
+  const durationSeconds = getProp(data, "duration", 0); // yt-dlp duration is in seconds
   if (durationSeconds > 0) {
     const minutes = Math.floor(durationSeconds / 60);
     const seconds = (durationSeconds % 60).toString().padStart(2, "0");
@@ -81,100 +65,136 @@ const getDuration = (data: any): string => {
   return "0:15"; // Default TikTok length if no duration found
 };
 
-// Helper function to extract view count and format it
-// Adjusted to tiktok-dl's common output structure
+// Helper function to extract view count from yt-dlp output and format it
 const getViews = (data: any): string => {
-  let viewCount = 0;
-
-  // tiktok-dl often provides stats directly or nested
-  viewCount =
-    getProp(data, "stats.playCount", 0) || // Primary for tiktok-dl
-    getProp(data, "play_count", 0) ||
-    getProp(data, "viewCount", 0);
-
-  // Ensure viewCount is a number
-  if (typeof viewCount === "string") {
-    viewCount = parseInt(viewCount, 10) || 0;
-  }
-
+  const viewCount = getProp(data, "view_count", 0); // yt-dlp view_count is direct
   if (viewCount > 0) {
     return formatViews(viewCount);
   }
-  return "0"; // Default to "0" if no views found
+  return "0";
 };
 
+// Function to get fresh video data (metadata and direct download URLs) using yt-dlp
+async function getFreshVideoData(tiktokUrl: string) {
+  let ytDlpOutput;
+  try {
+    const { stdout } = await execFilePromise(
+      "yt-dlp",
+      ["--no-warnings", "--dump-json", tiktokUrl],
+      { maxBuffer: 1024 * 1024 * 10 },
+    ); // 10MB buffer
+    ytDlpOutput = JSON.parse(stdout);
+  } catch (execError: any) {
+    console.error(
+      "Error running yt-dlp to get fresh data:",
+      execError.message,
+      execError.stderr,
+    );
+    throw new Error(`yt-dlp failed: ${execError.stderr || execError.message}`);
+  }
+
+  const data = ytDlpOutput;
+
+  let hdUrl = "";
+  let sdUrl = "";
+  let audioUrl = "";
+
+  if (data.formats && Array.isArray(data.formats)) {
+    // Filter for video streams (vcodec not 'none' and preferable without DRM)
+    // Also, prioritize formats that explicitly state 'no_watermark' or are combined.
+    const videoFormats = data.formats
+      .filter(
+        (f: any) =>
+          f.vcodec !== "none" &&
+          f.url &&
+          !f.protocol.startsWith("m3u8") &&
+          !f.protocol.startsWith("dash") &&
+          !f.format_note?.toLowerCase().includes("drm"),
+      )
+      .sort((a: any, b: any) => {
+        // Custom sort: Prioritize formats without watermark, then by height
+        const aNoWatermark =
+          a.format_note?.toLowerCase().includes("watermark") === false ||
+          a.format_note === null ||
+          a.format_id?.toLowerCase().includes("nowm");
+        const bNoWatermark =
+          b.format_note?.toLowerCase().includes("watermark") === false ||
+          b.format_note === null ||
+          b.format_id?.toLowerCase().includes("nowm");
+
+        if (aNoWatermark && !bNoWatermark) return -1;
+        if (!aNoWatermark && bNoWatermark) return 1;
+
+        return (b.height || 0) - (a.height || 0); // Then by height
+      });
+
+    // Filter for audio-only streams (acodec not 'none' and vcodec is 'none')
+    const audioOnlyFormats = data.formats
+      .filter(
+        (f: any) =>
+          f.acodec !== "none" &&
+          f.vcodec === "none" &&
+          f.url &&
+          !f.protocol.startsWith("m3u8") &&
+          !f.protocol.startsWith("dash"),
+      )
+      .sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
+
+    // Get HD URL: Highest resolution video format
+    if (videoFormats.length > 0) {
+      hdUrl = videoFormats[0].url;
+
+      // Get SD URL: Find a format around 480p/360p, distinct from HD if possible
+      const sdFormat = videoFormats.find(
+        (f: any) =>
+          (f.height || 0) <= 720 && (f.height || 0) >= 360 && f.url !== hdUrl,
+      );
+      sdUrl = (sdFormat && sdFormat.url) || hdUrl; // Fallback to HD if no distinct SD found
+    }
+
+    // Get Audio URL: Best quality audio-only format
+    if (audioOnlyFormats.length > 0) {
+      audioUrl = audioOnlyFormats[0].url;
+    }
+  }
+
+  const thumbnail = getThumbnail(data);
+  const duration = getDuration(data);
+  const views = getViews(data);
+
+  return {
+    id: String(data.id || Date.now()), // yt-dlp provides 'id'
+    title: String(data.title || "TikTok Video"), // yt-dlp provides 'title'
+    author: String(data.uploader || data.uploader_id || "Unknown").replace(
+      "@",
+      "",
+    ),
+    duration: duration,
+    views: views,
+    thumbnail: thumbnail,
+    downloadUrls: {
+      hd: String(hdUrl),
+      sd: String(sdUrl),
+      audio: String(audioUrl),
+    },
+    // downloadHeaders are NOT returned here as we are not proxying
+  };
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Extract TikTok video data
+  // Extract TikTok video data - This endpoint gets fresh metadata and download URLs
   app.post("/api/extract", async (req: Request, res: Response) => {
     try {
       const { url } = downloadRequestSchema.pick({ url: true }).parse(req.body);
 
-      // Skip cache for debugging - get fresh data
-      // const cached = await storage.getCachedVideoData(url);
-      // if (cached) {
-      //   return res.json(cached);
-      // }
-
-      // Use the new Downloader library
-      let result;
-      try {
-        result = await Downloader(url, {
-          version: "v1", // Required for this API
-        });
-      } catch (error) {
-        console.error("Error from Downloader library:", error);
-        return res.status(500).json({
-          error:
-            "Failed to communicate with TikTok API. Please try again later.",
-        });
+      // Try to get cached data first for quicker response on initial display
+      const cached = await storage.getCachedVideoData(url);
+      if (cached) {
+        return res.json(cached);
       }
 
-      if (!result || !result.result) {
-        return res.status(400).json({
-          error:
-            "Failed to extract video data. Please check the URL and try again. (No results from API)",
-        });
-      }
-
-      // The Downloader API returns a different structure
-      const data = result.result as any;
-
-      // Extract video URLs - tiktok-dl often provides direct URLs
-      let hdUrl =
-        getProp(data, "video.noWatermark", "") || getProp(data, "video.hd", ""); // Prioritize no watermark HD
-      let sdUrl =
-        getProp(data, "video.noWatermark", "") ||
-        getProp(data, "video.sd", "") ||
-        getProp(data, "video.hd", ""); // Fallback for SD
-      let audioUrl =
-        getProp(data, "music.url", "") || getProp(data, "audio", ""); // Direct audio URL
-
-      // If no noWatermark/hd/sd is found, check for a generic 'video' URL
-      if (!hdUrl && getProp(data, "video")) {
-        hdUrl = getProp(data, "video", "");
-        sdUrl = getProp(data, "video", "");
-      }
-
-      // Use the new robust helper functions for thumbnail, duration, and views
-      const thumbnail = getThumbnail(data);
-      const duration = getDuration(data);
-      const views = getViews(data);
-
-      const videoData = {
-        id: String(data.id || Date.now()), // tiktok-dl uses 'id'
-        title: String(data.description || data.title || "TikTok Video"), // tiktok-dl uses 'description'
-        author: String(
-          data.author?.unique_id || data.author?.nickname || "Unknown",
-        ).replace("@", ""),
-        duration: duration,
-        views: views,
-        thumbnail: thumbnail,
-        downloadUrls: {
-          hd: String(hdUrl),
-          sd: String(sdUrl),
-          audio: String(audioUrl),
-        },
-      };
+      // If not cached, get fresh data from yt-dlp
+      const videoData = await getFreshVideoData(url);
 
       // Validate and cache the data
       const validatedData = videoDataSchema.parse(videoData);
@@ -188,16 +208,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           details: error.errors,
         });
       }
-      console.error("Full error during /api/extract:", error); // Log the full error for debugging
+      console.error("Full error during /api/extract:", error);
       res.status(500).json({
         error:
-          "Failed to process video. Please ensure the URL is a valid TikTok video link. " +
-          (error as Error).message,
+          "Failed to process video. Please ensure the URL is a valid TikTok video link and yt-dlp is correctly configured. Detailed error: " +
+          (error instanceof Error ? error.message : String(error)),
       });
     }
   });
 
-  // Download video file
+  // Download video file - This endpoint will return the direct download URL in JSON for client-side download
   app.get("/api/download", async (req: Request, res: Response) => {
     try {
       const { url, quality = "hd" } = req.query;
@@ -206,11 +226,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Video URL is required" });
       }
 
-      // Get cached video data
-      const videoData = await storage.getCachedVideoData(url as string);
-      if (!videoData) {
-        return res.status(404).json({
-          error: "Video data not found. Please extract the video first.",
+      let freshVideoData;
+      try {
+        // IMPORTANT: Get fresh video data with latest download URLs right before download request
+        freshVideoData = await getFreshVideoData(url);
+      } catch (error: any) {
+        console.error(
+          "Error getting fresh video data for download:",
+          error.message,
+        );
+        return res.status(500).json({
+          error:
+            "Failed to fetch up-to-date video information for download. Please try again.",
+          details: error.message,
         });
       }
 
@@ -220,18 +248,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       switch (quality) {
         case "hd":
-          downloadUrl = videoData.downloadUrls.hd;
-          filename = `${videoData.id}_hd.mp4`;
+          downloadUrl = freshVideoData.downloadUrls.hd;
+          filename = `${freshVideoData.id}_hd.mp4`;
           contentType = "video/mp4";
           break;
         case "sd":
-          downloadUrl = videoData.downloadUrls.sd || videoData.downloadUrls.hd;
-          filename = `${videoData.id}_sd.mp4`;
+          downloadUrl =
+            freshVideoData.downloadUrls.sd || freshVideoData.downloadUrls.hd;
+          filename = `${freshVideoData.id}_sd.mp4`;
           contentType = "video/mp4";
           break;
         case "audio":
-          downloadUrl = videoData.downloadUrls.audio;
-          filename = `${videoData.id}_audio.mp3`;
+          downloadUrl = freshVideoData.downloadUrls.audio;
+          filename = `${freshVideoData.id}_audio.mp3`;
           contentType = "audio/mpeg";
           break;
         default:
@@ -244,16 +273,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Return direct download URL for instant downloads
+      // --- RETURN THE DIRECT DOWNLOAD URL IN JSON TO THE CLIENT ---
+      // The client-side JavaScript will then take this URL and initiate the download.
       res.json({
         downloadUrl: downloadUrl,
         filename: filename,
         contentType: contentType,
       });
     } catch (error) {
-      console.error("Error downloading video:", error); // Log the full error for debugging
+      console.error("Error in /api/download route (outer try-catch):", error);
       res.status(500).json({
-        error: "Failed to download video. Please try again.",
+        error:
+          "An unexpected error occurred during download processing. Please try again. Detailed error: " +
+          (error instanceof Error ? error.message : String(error)),
       });
     }
   });

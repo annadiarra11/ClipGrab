@@ -33,7 +33,6 @@ export function VideoPreview({ videoData, originalUrl }: VideoPreviewProps) {
       const a = document.createElement('a');
       a.href = data.downloadUrl;
       a.download = data.filename;
-      a.target = '_blank';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
