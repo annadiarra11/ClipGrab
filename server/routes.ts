@@ -20,30 +20,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       //   return res.json(cached);
       // }
 
-      // Extract video data using TikTok API - try v1 first for complete metadata
+      // Extract video data using TikTok API - try multiple versions for best compatibility
       let result;
       let data;
       
       try {
-        // Use v1 for complete metadata - it was providing perfect data
+        // Try v2 first for more complete metadata
         result = await TikTokScraper.Downloader(url, {
-          version: "v1"
+          version: "v2"
         });
         
         if (!result.status || !result.result) {
-          throw new Error("v1 failed");
-        }
-      } catch (error) {
-        // Only fallback if v1 completely fails
-        try {
+          // Fallback to v3 if v2 fails
           result = await TikTokScraper.Downloader(url, {
             version: "v3"
           });
-        } catch (error2) {
-          result = await TikTokScraper.Downloader(url, {
-            version: "v2"
-          });
         }
+      } catch (error) {
+        // Last fallback to v1
+        result = await TikTokScraper.Downloader(url, {
+          version: "v1"
+        });
       }
 
       if (!result.status || !result.result) {
@@ -53,8 +50,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       data = result.result as any;
-      
-      // Extract real data from v1 API response
 
       // Extract video URLs - support multiple API versions
       let hdUrl = "";
@@ -70,48 +65,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
         hdUrl = data.videoHD || "";
         sdUrl = data.videoSD || data.videoHD || "";
         audioUrl = data.audio || data.music || "";
+        thumbnail = data.cover || data.thumbnail || data.author?.avatar || "";
       } else if (data.video) {
-        // v2/v1 format - extract from video object
+        // v2/v1 format
         if (Array.isArray(data.video)) {
           hdUrl = data.video[0] || "";
           sdUrl = data.video[1] || data.video[0] || "";
-        } else if (typeof data.video === 'string') {
-          hdUrl = data.video;
-          sdUrl = data.video;
         } else {
-          hdUrl = data.video.playAddr || data.video.play_addr || data.video.downloadAddr || data.video.download_addr || "";
-          sdUrl = data.video.downloadAddr || data.video.download_addr || hdUrl;
+          hdUrl = data.video.playAddr || data.video || "";
+          sdUrl = data.video.downloadAddr || hdUrl;
         }
-        audioUrl = data.music?.playUrl || data.music?.play_url || data.music || "";
+        audioUrl = data.music?.playUrl || data.music || "";
+        thumbnail = data.cover || data.thumbnail || data.video?.cover || data.video?.originCover || data.origin_cover || "";
       }
 
-      // Extract thumbnail from video object (v1 API format)
-      if (data.video && typeof data.video === 'object') {
-        thumbnail = data.video.cover || data.video.originCover || data.video.dynamicCover || "";
-      }
-      if (!thumbnail) {
-        thumbnail = data.cover || data.dynamicCover || data.originCover || data.author?.avatar || "";
-      }
-
-      // Extract duration from video object (v1 API stores it there)
-      let durationMs = 0;
-      if (data.video && typeof data.video === 'object') {
-        durationMs = data.video.duration || data.video.playTime || 0;
-      }
-      if (!durationMs) {
-        durationMs = data.duration || data.video_duration || data.music?.duration || 0;
-      }
-      
-      if (durationMs > 0) {
-        const durationSeconds = durationMs > 1000 ? Math.floor(durationMs / 1000) : Math.floor(durationMs);
+      // Extract duration properly - TikTok API often provides duration in milliseconds
+      if (data.duration) {
+        const durationSeconds = data.duration > 1000 ? Math.floor(data.duration / 1000) : Math.floor(data.duration);
+        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
+      } else if (data.video_duration) {
+        const durationSeconds = data.video_duration > 1000 ? Math.floor(data.video_duration / 1000) : Math.floor(data.video_duration);
+        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
+      } else if (data.music?.duration) {
+        const durationSeconds = data.music.duration > 1000 ? Math.floor(data.music.duration / 1000) : Math.floor(data.music.duration);
         duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
       } else {
-        duration = "0:30";
+        duration = "0:15"; // Default TikTok length
       }
 
-      // Extract view count - we can see playCount is available in statistics
-      const viewCount = data.statistics?.playCount || data.statistics?.play_count || 0;
-      views = formatViews(viewCount);
+      // Extract view count properly - try multiple possible fields
+      const viewCount = data.statistics?.play_count || 
+                       data.play_count || 
+                       data.stats?.playCount || 
+                       data.stats?.play_count ||
+                       data.playCount ||
+                       data.view_count ||
+                       data.viewCount ||
+                       0;
+      
+      if (viewCount > 0) {
+        views = formatViews(viewCount);
+      } else {
+        views = "0";
+      }
 
       const videoData = {
         id: String(data.aweme_id || data.id || Date.now()),
