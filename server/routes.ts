@@ -33,44 +33,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const data = result.result as any;
       
-      // Helper function to ensure string output
-      const ensureString = (value: any): string => {
-        if (value === null || value === undefined) {
-          return "";
-        }
+      // Helper function to get string from array or string
+      const getStringFromArrayOrString = (value: any): string => {
         if (Array.isArray(value)) {
-          return value.length > 0 ? String(value[0]) : "";
+          return value[0] || "";
         }
-        return String(value);
+        return value || "";
       };
 
-      // Build video data with proper string conversion
-      const rawVideoData = {
-        id: data.aweme_id || data.id || Date.now().toString(),
-        title: data.desc || data.title || "TikTok Video", 
-        author: data.author?.nickname || data.author?.unique_id || data.author?.username || "Unknown",
-        duration: data.duration ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, '0')}` : "0:00",
-        views: data.statistics?.play_count ? formatViews(data.statistics.play_count) : "0",
-        thumbnail: data.video?.cover || data.video?.originCover || data.cover || data.thumbnail || "",
-        downloadUrls: {
-          hd: data.video?.playAddr || data.video || "",
-          sd: data.video?.playAddr || data.video || "",
-          audio: data.music?.playUrl || data.music || ""
-        }
-      };
+      // Extract video URLs properly
+      const hdUrl = getStringFromArrayOrString(data.video?.playAddr) || getStringFromArrayOrString(data.video) || "";
+      const sdUrl = getStringFromArrayOrString(data.video?.playAddr) || getStringFromArrayOrString(data.video) || hdUrl;
+      const audioUrl = getStringFromArrayOrString(data.music?.playUrl) || getStringFromArrayOrString(data.music) || "";
 
-      // Ensure all fields are strings
+      console.log("Debug data structure:", {
+        video: data.video,
+        music: data.music,
+        hdUrl,
+        sdUrl,
+        audioUrl,
+        audioType: typeof audioUrl,
+        audioIsArray: Array.isArray(audioUrl)
+      });
+
       const videoData = {
-        id: ensureString(rawVideoData.id),
-        title: ensureString(rawVideoData.title),
-        author: ensureString(rawVideoData.author),
-        duration: ensureString(rawVideoData.duration),
-        views: ensureString(rawVideoData.views),
-        thumbnail: ensureString(rawVideoData.thumbnail),
+        id: String(data.aweme_id || data.id || Date.now()),
+        title: String(data.desc || data.title || "TikTok Video"),
+        author: String(data.author?.nickname || data.author?.unique_id || data.author?.username || "Unknown"),
+        duration: data.duration ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, '0')}` : "0:00",
+        views: String(data.statistics?.play_count ? formatViews(data.statistics.play_count) : "0"),
+        thumbnail: String(getStringFromArrayOrString(data.video?.cover || data.video?.originCover || data.cover || data.thumbnail || "")),
         downloadUrls: {
-          hd: ensureString(rawVideoData.downloadUrls.hd),
-          sd: ensureString(rawVideoData.downloadUrls.sd),
-          audio: ensureString(rawVideoData.downloadUrls.audio)
+          hd: String(hdUrl),
+          sd: String(sdUrl || hdUrl),
+          audio: String(audioUrl)
         }
       };
 
