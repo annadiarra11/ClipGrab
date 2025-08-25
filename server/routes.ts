@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { videoDataSchema, downloadRequestSchema } from "@shared/schema";
 import { z } from "zod";
+import fetch from "node-fetch";
 import { execFile } from "child_process";
 import util from "util"; // For promisify
 
@@ -273,13 +274,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // --- RETURN THE DIRECT DOWNLOAD URL IN JSON TO THE CLIENT ---
-      // The client-side JavaScript will then take this URL and initiate the download.
-      res.json({
-        downloadUrl: downloadUrl,
-        filename: filename,
-        contentType: contentType,
-      });
+      // Stream the video content with proper download headers
+      try {
+        const videoResponse = await fetch(downloadUrl);
+        
+        if (!videoResponse.ok) {
+          throw new Error(`Failed to fetch video: ${videoResponse.status}`);
+        }
+
+        // Set proper headers to force download
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Type', contentType);
+        
+        // Set content length if available
+        const contentLength = videoResponse.headers.get('content-length');
+        if (contentLength) {
+          res.setHeader('Content-Length', contentLength);
+        }
+
+        // Stream the video content directly to the response
+        if (videoResponse.body) {
+          videoResponse.body.pipe(res);
+        } else {
+          throw new Error('No video content received');
+        }
+      } catch (streamError) {
+        console.error("Error streaming video:", streamError);
+        res.status(500).json({
+          error: "Failed to stream video content. Please try again.",
+        });
+      }
     } catch (error) {
       console.error("Error in /api/download route (outer try-catch):", error);
       res.status(500).json({

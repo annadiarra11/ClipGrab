@@ -23,19 +23,39 @@ export function VideoPreview({ videoData, originalUrl }: VideoPreviewProps) {
       const response = await fetch(`/api/download?url=${encodeURIComponent(originalUrl)}&quality=${quality}`);
       
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Download failed');
+        // Try to parse JSON error if available
+        try {
+          const error = await response.json();
+          throw new Error(error.error || 'Download failed');
+        } catch {
+          throw new Error(`Download failed with status: ${response.status}`);
+        }
       }
 
-      const data = await response.json();
+      // Get the filename from the Content-Disposition header
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = `tiktok_video_${quality}.mp4`;
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      // Get the video data as a blob
+      const blob = await response.blob();
       
-      // Create direct download link
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = data.downloadUrl;
-      a.download = data.filename;
+      a.href = url;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      
+      // Clean up the blob URL
+      window.URL.revokeObjectURL(url);
 
       toast({
         title: "Download started!",
