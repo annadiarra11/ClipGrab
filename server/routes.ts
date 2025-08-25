@@ -22,7 +22,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Extract video data using TikTok API
       const result = await TikTokScraper.Downloader(url, {
-        version: "v2"
+        version: "v3" // Try v3 for better metadata
       });
 
       if (!result.status || !result.result) {
@@ -46,23 +46,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sdUrl = getStringFromArrayOrString(data.video?.playAddr) || getStringFromArrayOrString(data.video) || hdUrl;
       const audioUrl = getStringFromArrayOrString(data.music?.playUrl) || getStringFromArrayOrString(data.music) || "";
 
-      console.log("Debug data structure:", {
-        video: data.video,
-        music: data.music,
-        hdUrl,
-        sdUrl,
-        audioUrl,
-        audioType: typeof audioUrl,
-        audioIsArray: Array.isArray(audioUrl)
-      });
+      console.log("Full API response structure:", JSON.stringify(data, null, 2));
 
       const videoData = {
         id: String(data.aweme_id || data.id || Date.now()),
-        title: String(data.desc || data.title || "TikTok Video"),
-        author: String(data.author?.nickname || data.author?.unique_id || data.author?.username || "Unknown"),
-        duration: data.duration ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, '0')}` : "0:00",
-        views: String(data.statistics?.play_count ? formatViews(data.statistics.play_count) : "0"),
-        thumbnail: String(getStringFromArrayOrString(data.video?.cover || data.video?.originCover || data.cover || data.thumbnail || "")),
+        title: String(data.desc || data.title || data.description || "TikTok Video"),
+        author: String(data.author?.nickname || data.author?.unique_id || data.author?.username || data.nickname || "Unknown"),
+        duration: data.duration ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, '0')}` : (data.video_duration ? `${Math.floor(data.video_duration / 60)}:${(data.video_duration % 60).toString().padStart(2, '0')}` : "0:00"),
+        views: String(data.statistics?.play_count ? formatViews(data.statistics.play_count) : (data.play_count ? formatViews(data.play_count) : (data.view_count ? formatViews(data.view_count) : "0"))),
+        thumbnail: String(data.cover || data.thumbnail || data.video?.cover || data.video?.originCover || data.origin_cover || ""),
         downloadUrls: {
           hd: String(hdUrl),
           sd: String(sdUrl || hdUrl),
