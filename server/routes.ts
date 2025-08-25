@@ -4,123 +4,177 @@ import { storage } from "./storage";
 import { videoDataSchema, downloadRequestSchema } from "@shared/schema";
 import { z } from "zod";
 
-// TikTok API library
-import TikTokScraper from "@tobyg74/tiktok-api-dl";
+// TikTok API library - Switched to 'tiktok-dl' for potentially better reliability
+import { tiktokdl } from "tiktok-dl";
+
+// Helper to safely get nested property with a default value
+const getProp = (obj: any, path: string, defaultValue: any = undefined) => {
+  const parts = path.split(".");
+  let current = obj;
+  for (const part of parts) {
+    if (current === null || typeof current === "undefined") {
+      return defaultValue;
+    }
+    current = current[part];
+  }
+  return current === null || typeof current === "undefined"
+    ? defaultValue
+    : current;
+};
+
+// Helper function to extract thumbnail URL robustly
+// Adjusted to tiktok-dl's common output structure
+const getThumbnail = (data: any): string => {
+  // Prioritize video cover URLs
+  const coverUrls =
+    getProp(data, "cover", []) || getProp(data, "thumbnail", []);
+  if (Array.isArray(coverUrls) && coverUrls.length > 0) {
+    return coverUrls[0]; // Take the first available cover URL
+  }
+
+  // tiktok-dl often provides a single 'cover_url' or similar directly
+  const directCover =
+    getProp(data, "cover_url", "") || getProp(data, "display_url", "");
+  if (
+    directCover &&
+    typeof directCover === "string" &&
+    directCover.startsWith("http")
+  ) {
+    return directCover;
+  }
+
+  // Fallback to author avatar if no video cover is found (less ideal)
+  const authorAvatar = getProp(data, "author.avatar", "");
+  if (
+    authorAvatar &&
+    typeof authorAvatar === "string" &&
+    authorAvatar.startsWith("http")
+  ) {
+    return authorAvatar;
+  }
+
+  return ""; // Return empty string if no suitable thumbnail is found
+};
+
+// Helper function to extract duration and format it
+// Adjusted to tiktok-dl's common output structure
+const getDuration = (data: any): string => {
+  let durationSeconds = 0;
+
+  // tiktok-dl often provides duration in seconds directly or in milliseconds under 'duration' or 'video_info.duration'
+  durationSeconds =
+    getProp(data, "duration", 0) || getProp(data, "video_info.duration", 0); // Check for nested duration
+
+  // If the value is very large, it's likely milliseconds, convert to seconds
+  if (durationSeconds > 10000) {
+    // Using a higher threshold to avoid converting already-seconds values
+    durationSeconds = Math.floor(durationSeconds / 1000);
+  } else {
+    durationSeconds = Math.floor(durationSeconds); // Assume it's already in seconds or small value
+  }
+
+  if (durationSeconds > 0) {
+    const minutes = Math.floor(durationSeconds / 60);
+    const seconds = (durationSeconds % 60).toString().padStart(2, "0");
+    return `${minutes}:${seconds}`;
+  }
+  return "0:15"; // Default TikTok length if no duration found
+};
+
+// Helper function to extract view count and format it
+// Adjusted to tiktok-dl's common output structure
+const getViews = (data: any): string => {
+  let viewCount = 0;
+
+  // tiktok-dl often provides stats directly or nested
+  viewCount =
+    getProp(data, "stats.playCount", 0) || // Primary for tiktok-dl
+    getProp(data, "play_count", 0) ||
+    getProp(data, "viewCount", 0);
+
+  // Ensure viewCount is a number
+  if (typeof viewCount === "string") {
+    viewCount = parseInt(viewCount, 10) || 0;
+  }
+
+  if (viewCount > 0) {
+    return formatViews(viewCount);
+  }
+  return "0"; // Default to "0" if no views found
+};
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  
   // Extract TikTok video data
   app.post("/api/extract", async (req: Request, res: Response) => {
     try {
       const { url } = downloadRequestSchema.pick({ url: true }).parse(req.body);
-      
+
       // Skip cache for debugging - get fresh data
       // const cached = await storage.getCachedVideoData(url);
       // if (cached) {
       //   return res.json(cached);
       // }
 
-      // Extract video data using TikTok API - try multiple versions for best compatibility
+      // Use the new tiktokdl library
       let result;
-      let data;
-      
       try {
-        // Try v2 first for more complete metadata
-        result = await TikTokScraper.Downloader(url, {
-          version: "v2"
+        result = await tiktokdl(url, {
+          // No versioning needed for tiktok-dl, it handles internal API versions
+          hd: true, // Request HD quality directly if available
         });
-        
-        if (!result.status || !result.result) {
-          // Fallback to v3 if v2 fails
-          result = await TikTokScraper.Downloader(url, {
-            version: "v3"
-          });
-        }
       } catch (error) {
-        // Last fallback to v1
-        result = await TikTokScraper.Downloader(url, {
-          version: "v1"
+        console.error("Error from tiktokdl library:", error);
+        return res.status(500).json({
+          error:
+            "Failed to communicate with TikTok API. Please try again later.",
         });
       }
 
-      if (!result.status || !result.result) {
-        return res.status(400).json({ 
-          error: "Failed to extract video data. Please check the URL and try again." 
+      if (!result || !result.result || result.result.length === 0) {
+        return res.status(400).json({
+          error:
+            "Failed to extract video data. Please check the URL and try again. (No results from tiktok-dl)",
         });
       }
 
-      data = result.result as any;
+      // tiktok-dl usually returns an array of results, take the first one
+      const data = result.result[0] as any;
 
-      // Extract video URLs - support multiple API versions
-      let hdUrl = "";
-      let sdUrl = "";
-      let audioUrl = "";
-      let thumbnail = "";
-      let duration = "";
-      let views = "";
+      // Extract video URLs - tiktok-dl often provides direct URLs
+      let hdUrl =
+        getProp(data, "video.noWatermark", "") || getProp(data, "video.hd", ""); // Prioritize no watermark HD
+      let sdUrl =
+        getProp(data, "video.noWatermark", "") ||
+        getProp(data, "video.sd", "") ||
+        getProp(data, "video.hd", ""); // Fallback for SD
+      let audioUrl =
+        getProp(data, "music.url", "") || getProp(data, "audio", ""); // Direct audio URL
 
-      // Handle different API response formats
-      if (data.videoHD || data.videoSD) {
-        // v3 format
-        hdUrl = data.videoHD || "";
-        sdUrl = data.videoSD || data.videoHD || "";
-        audioUrl = data.audio || data.music || "";
-        thumbnail = data.cover || data.thumbnail || data.author?.avatar || "";
-      } else if (data.video) {
-        // v2/v1 format
-        if (Array.isArray(data.video)) {
-          hdUrl = data.video[0] || "";
-          sdUrl = data.video[1] || data.video[0] || "";
-        } else {
-          hdUrl = data.video.playAddr || data.video || "";
-          sdUrl = data.video.downloadAddr || hdUrl;
-        }
-        audioUrl = data.music?.playUrl || data.music || "";
-        thumbnail = data.cover || data.thumbnail || data.video?.cover || data.video?.originCover || data.origin_cover || "";
+      // If no noWatermark/hd/sd is found, check for a generic 'video' URL
+      if (!hdUrl && getProp(data, "video")) {
+        hdUrl = getProp(data, "video", "");
+        sdUrl = getProp(data, "video", "");
       }
 
-      // Extract duration properly - TikTok API often provides duration in milliseconds
-      if (data.duration) {
-        const durationSeconds = data.duration > 1000 ? Math.floor(data.duration / 1000) : Math.floor(data.duration);
-        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
-      } else if (data.video_duration) {
-        const durationSeconds = data.video_duration > 1000 ? Math.floor(data.video_duration / 1000) : Math.floor(data.video_duration);
-        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
-      } else if (data.music?.duration) {
-        const durationSeconds = data.music.duration > 1000 ? Math.floor(data.music.duration / 1000) : Math.floor(data.music.duration);
-        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
-      } else {
-        duration = "0:15"; // Default TikTok length
-      }
-
-      // Extract view count properly - try multiple possible fields
-      const viewCount = data.statistics?.play_count || 
-                       data.play_count || 
-                       data.stats?.playCount || 
-                       data.stats?.play_count ||
-                       data.playCount ||
-                       data.view_count ||
-                       data.viewCount ||
-                       0;
-      
-      if (viewCount > 0) {
-        views = formatViews(viewCount);
-      } else {
-        views = "0";
-      }
+      // Use the new robust helper functions for thumbnail, duration, and views
+      const thumbnail = getThumbnail(data);
+      const duration = getDuration(data);
+      const views = getViews(data);
 
       const videoData = {
-        id: String(data.aweme_id || data.id || Date.now()),
-        title: String(data.desc || data.title || data.description || "TikTok Video"),
-        author: String(data.author?.nickname || data.author?.unique_id || data.author?.username || data.nickname || "Unknown").replace('@', ''),
+        id: String(data.id || Date.now()), // tiktok-dl uses 'id'
+        title: String(data.description || data.title || "TikTok Video"), // tiktok-dl uses 'description'
+        author: String(
+          data.author?.unique_id || data.author?.nickname || "Unknown",
+        ).replace("@", ""),
         duration: duration,
         views: views,
         thumbnail: thumbnail,
         downloadUrls: {
           hd: String(hdUrl),
           sd: String(sdUrl),
-          audio: String(audioUrl)
-        }
+          audio: String(audioUrl),
+        },
       };
 
       // Validate and cache the data
@@ -130,13 +184,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(validatedData);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return res.status(400).json({ 
-          error: "Invalid request data", 
-          details: error.errors 
+        return res.status(400).json({
+          error: "Invalid request data",
+          details: error.errors,
         });
       }
-      res.status(500).json({ 
-        error: "Failed to process video. Please ensure the URL is a valid TikTok video link." 
+      console.error("Full error during /api/extract:", error); // Log the full error for debugging
+      res.status(500).json({
+        error:
+          "Failed to process video. Please ensure the URL is a valid TikTok video link. " +
+          (error as Error).message,
       });
     }
   });
@@ -144,17 +201,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Download video file
   app.get("/api/download", async (req: Request, res: Response) => {
     try {
-      const { url, quality = 'hd' } = req.query;
-      
-      if (!url || typeof url !== 'string') {
+      const { url, quality = "hd" } = req.query;
+
+      if (!url || typeof url !== "string") {
         return res.status(400).json({ error: "Video URL is required" });
       }
 
       // Get cached video data
       const videoData = await storage.getCachedVideoData(url as string);
       if (!videoData) {
-        return res.status(404).json({ 
-          error: "Video data not found. Please extract the video first." 
+        return res.status(404).json({
+          error: "Video data not found. Please extract the video first.",
         });
       }
 
@@ -163,28 +220,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let contentType: string;
 
       switch (quality) {
-        case 'hd':
+        case "hd":
           downloadUrl = videoData.downloadUrls.hd;
           filename = `${videoData.id}_hd.mp4`;
-          contentType = 'video/mp4';
+          contentType = "video/mp4";
           break;
-        case 'sd':
+        case "sd":
           downloadUrl = videoData.downloadUrls.sd || videoData.downloadUrls.hd;
           filename = `${videoData.id}_sd.mp4`;
-          contentType = 'video/mp4';
+          contentType = "video/mp4";
           break;
-        case 'audio':
+        case "audio":
           downloadUrl = videoData.downloadUrls.audio;
           filename = `${videoData.id}_audio.mp3`;
-          contentType = 'audio/mpeg';
+          contentType = "audio/mpeg";
           break;
         default:
           return res.status(400).json({ error: "Invalid quality option" });
       }
 
       if (!downloadUrl) {
-        return res.status(404).json({ 
-          error: `${quality.toUpperCase()} quality not available for this video` 
+        return res.status(404).json({
+          error: `${quality.toUpperCase()} quality not available for this video`,
         });
       }
 
@@ -192,12 +249,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         downloadUrl: downloadUrl,
         filename: filename,
-        contentType: contentType
+        contentType: contentType,
       });
-
     } catch (error) {
-      res.status(500).json({ 
-        error: "Failed to download video. Please try again." 
+      console.error("Error downloading video:", error); // Log the full error for debugging
+      res.status(500).json({
+        error: "Failed to download video. Please try again.",
       });
     }
   });
@@ -208,9 +265,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
 function formatViews(count: number): string {
   if (count >= 1000000) {
-    return (count / 1000000).toFixed(1) + 'M';
+    return (count / 1000000).toFixed(1) + "M";
   } else if (count >= 1000) {
-    return (count / 1000).toFixed(1) + 'K';
+    return (count / 1000).toFixed(1) + "K";
   }
   return count.toString();
 }
