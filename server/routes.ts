@@ -20,38 +20,94 @@ export async function registerRoutes(app: Express): Promise<Server> {
       //   return res.json(cached);
       // }
 
-      // Extract video data using TikTok API
-      console.log("Attempting to extract from URL:", url);
+      // Extract video data using TikTok API - try multiple versions for best compatibility
+      let result;
+      let data;
       
-      const result = await TikTokScraper.Downloader(url, {
-        version: "v3" // Try v3 for better compatibility
-      });
-
-      console.log("TikTok API result:", JSON.stringify(result, null, 2));
+      try {
+        // Try v2 first for more complete metadata
+        result = await TikTokScraper.Downloader(url, {
+          version: "v2"
+        });
+        
+        if (!result.status || !result.result) {
+          // Fallback to v3 if v2 fails
+          result = await TikTokScraper.Downloader(url, {
+            version: "v3"
+          });
+        }
+      } catch (error) {
+        // Last fallback to v1
+        result = await TikTokScraper.Downloader(url, {
+          version: "v1"
+        });
+      }
 
       if (!result.status || !result.result) {
-        console.error("TikTok API failed:", result);
         return res.status(400).json({ 
           error: "Failed to extract video data. Please check the URL and try again." 
         });
       }
 
-      const data = result.result as any;
+      data = result.result as any;
 
-      console.log("Full API response structure:", JSON.stringify(data, null, 2));
+      // Extract video URLs - support multiple API versions
+      let hdUrl = "";
+      let sdUrl = "";
+      let audioUrl = "";
+      let thumbnail = "";
+      let duration = "";
+      let views = "";
 
-      // Extract video URLs from v3 API format
-      const hdUrl = data.videoHD || "";
-      const sdUrl = data.videoSD || data.videoHD || "";
-      const audioUrl = data.audio || "";
+      // Handle different API response formats
+      if (data.videoHD || data.videoSD) {
+        // v3 format
+        hdUrl = data.videoHD || "";
+        sdUrl = data.videoSD || data.videoHD || "";
+        audioUrl = data.audio || data.music || "";
+        thumbnail = data.cover || data.thumbnail || data.author?.avatar || "";
+      } else if (data.video) {
+        // v2/v1 format
+        if (Array.isArray(data.video)) {
+          hdUrl = data.video[0] || "";
+          sdUrl = data.video[1] || data.video[0] || "";
+        } else {
+          hdUrl = data.video.playAddr || data.video || "";
+          sdUrl = data.video.downloadAddr || hdUrl;
+        }
+        audioUrl = data.music?.playUrl || data.music || "";
+        thumbnail = data.cover || data.thumbnail || data.video?.cover || data.video?.originCover || data.origin_cover || "";
+      }
+
+      // Extract duration properly
+      if (data.duration) {
+        const durationSeconds = Math.floor(data.duration);
+        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
+      } else if (data.video_duration) {
+        const durationSeconds = Math.floor(data.video_duration);
+        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
+      } else {
+        duration = "0:15"; // Default TikTok length
+      }
+
+      // Extract view count properly
+      if (data.statistics?.play_count) {
+        views = formatViews(data.statistics.play_count);
+      } else if (data.play_count) {
+        views = formatViews(data.play_count);
+      } else if (data.stats?.playCount) {
+        views = formatViews(data.stats.playCount);
+      } else {
+        views = "0"; // Show 0 if no view data
+      }
 
       const videoData = {
         id: String(data.aweme_id || data.id || Date.now()),
         title: String(data.desc || data.title || data.description || "TikTok Video"),
-        author: String(data.author?.nickname || data.author?.unique_id || data.author?.username || data.nickname || "Unknown"),
-        duration: data.duration ? `${Math.floor(data.duration / 60)}:${(data.duration % 60).toString().padStart(2, '0')}` : (data.video_duration ? `${Math.floor(data.video_duration / 60)}:${(data.video_duration % 60).toString().padStart(2, '0')}` : "0:30"),
-        views: String(data.statistics?.play_count ? formatViews(data.statistics.play_count) : (data.play_count ? formatViews(data.play_count) : (data.view_count ? formatViews(data.view_count) : "1.2M"))),
-        thumbnail: String(data.cover || data.thumbnail || data.video?.cover || data.video?.originCover || data.origin_cover || data.author?.avatar || ""),
+        author: String(data.author?.nickname || data.author?.unique_id || data.author?.username || data.nickname || "Unknown").replace('@', ''),
+        duration: duration,
+        views: views,
+        thumbnail: thumbnail,
         downloadUrls: {
           hd: String(hdUrl),
           sd: String(sdUrl),
@@ -65,7 +121,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json(validatedData);
     } catch (error) {
-      console.error("Video extraction error:", error);
       if (error instanceof z.ZodError) {
         return res.status(400).json({ 
           error: "Invalid request data", 
@@ -128,8 +183,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Stream the video file
       const fetch = (await import('node-fetch')).default;
       
-      console.log("Downloading from URL:", downloadUrl);
-      
       const response = await fetch(downloadUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -137,12 +190,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
       
       if (!response.ok) {
-        console.error(`Download failed: ${response.status} ${response.statusText}`);
         throw new Error(`Failed to fetch video: ${response.statusText}`);
       }
 
       const contentLength = response.headers.get('content-length');
-      console.log("Content length:", contentLength);
 
       // Set appropriate headers for download
       res.setHeader('Content-Type', contentType);
@@ -161,7 +212,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
     } catch (error) {
-      console.error("Download error:", error);
       res.status(500).json({ 
         error: "Failed to download video. Please try again." 
       });

@@ -100,7 +100,7 @@ export function VideoPreview({ videoData, originalUrl }: VideoPreviewProps) {
                     <Video className="h-5 w-5 text-tiktok-pink" />
                     <div>
                       <div className="font-medium">{t.hdVideo}</div>
-                      <div className="text-sm text-gray-500">720p • MP4</div>
+                      <div className="text-sm text-gray-500">HD • MP4</div>
                     </div>
                   </div>
                   <Button
@@ -120,7 +120,7 @@ export function VideoPreview({ videoData, originalUrl }: VideoPreviewProps) {
                     <Video className="h-5 w-5 text-gray-400" />
                     <div>
                       <div className="font-medium">{t.standardVideo}</div>
-                      <div className="text-sm text-gray-500">480p • MP4</div>
+                      <div className="text-sm text-gray-500">SD • MP4</div>
                     </div>
                   </div>
                   <Button
@@ -135,7 +135,7 @@ export function VideoPreview({ videoData, originalUrl }: VideoPreviewProps) {
                 </div>
               )}
               
-              {videoData.downloadUrls.audio && (
+              {videoData.downloadUrls.audio ? (
                 <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
                   <div className="flex items-center space-x-3">
                     <Music className="h-5 w-5 text-tiktok-cyan" />
@@ -151,6 +151,24 @@ export function VideoPreview({ videoData, originalUrl }: VideoPreviewProps) {
                     data-testid="download-audio"
                   >
                     {downloading === 'audio' ? 'Downloading...' : t.download}
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg opacity-50">
+                  <div className="flex items-center space-x-3">
+                    <Music className="h-5 w-5 text-gray-400" />
+                    <div>
+                      <div className="font-medium">{t.audioOnly}</div>
+                      <div className="text-sm text-gray-500">Not available</div>
+                    </div>
+                  </div>
+                  <Button
+                    disabled={true}
+                    variant="outline"
+                    className="font-semibold"
+                    data-testid="download-audio-disabled"
+                  >
+                    Not Available
                   </Button>
                 </div>
               )}
