@@ -25,23 +25,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let data;
       
       try {
-        // Try v1 first for complete metadata including views, duration, thumbnail
+        // Use v1 for complete metadata - it was providing perfect data
         result = await TikTokScraper.Downloader(url, {
           version: "v1"
         });
         
-        if (!result.status || !result.result || !result.result.statistics?.playCount) {
-          // Try v3 if v1 doesn't provide complete data
-          console.log("Trying v3 for better data...");
+        if (!result.status || !result.result) {
+          throw new Error("v1 failed");
+        }
+      } catch (error) {
+        // Only fallback if v1 completely fails
+        try {
           result = await TikTokScraper.Downloader(url, {
             version: "v3"
           });
+        } catch (error2) {
+          result = await TikTokScraper.Downloader(url, {
+            version: "v2"
+          });
         }
-      } catch (error) {
-        console.log("Fallback to v2...");
-        result = await TikTokScraper.Downloader(url, {
-          version: "v2"
-        });
       }
 
       if (!result.status || !result.result) {
@@ -52,9 +54,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       data = result.result as any;
       
-      // Debug the video and music objects to see what's inside
-      console.log("DEBUG - Video object details:", JSON.stringify(data.video, null, 2));
-      console.log("DEBUG - Music object details:", JSON.stringify(data.music, null, 2));
+      // Extract real data from v1 API response
 
       // Extract video URLs - support multiple API versions
       let hdUrl = "";
@@ -85,28 +85,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         audioUrl = data.music?.playUrl || data.music?.play_url || data.music || "";
       }
 
-      // Extract thumbnail - check all possible locations
-      thumbnail = data.cover || 
-                 data.dynamicCover || 
-                 data.originCover ||
-                 data.thumbnail || 
-                 data.video?.cover || 
-                 data.video?.originCover || 
-                 data.video?.dynamicCover ||
-                 data.author?.avatar || "";
+      // Extract thumbnail from video object (v1 API format)
+      if (data.video && typeof data.video === 'object') {
+        thumbnail = data.video.cover || data.video.originCover || data.video.dynamicCover || "";
+      }
+      if (!thumbnail) {
+        thumbnail = data.cover || data.dynamicCover || data.originCover || data.author?.avatar || "";
+      }
 
-      // Extract duration - check all possible sources
-      let durationMs = data.duration || 
-                      data.video_duration || 
-                      data.music?.duration ||
-                      data.video?.duration ||
-                      0;
+      // Extract duration from video object (v1 API stores it there)
+      let durationMs = 0;
+      if (data.video && typeof data.video === 'object') {
+        durationMs = data.video.duration || data.video.playTime || 0;
+      }
+      if (!durationMs) {
+        durationMs = data.duration || data.video_duration || data.music?.duration || 0;
+      }
       
       if (durationMs > 0) {
         const durationSeconds = durationMs > 1000 ? Math.floor(durationMs / 1000) : Math.floor(durationMs);
         duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
       } else {
-        duration = "0:30"; // Realistic TikTok default
+        duration = "0:30";
       }
 
       // Extract view count - we can see playCount is available in statistics
