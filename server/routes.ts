@@ -79,26 +79,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         thumbnail = data.cover || data.thumbnail || data.video?.cover || data.video?.originCover || data.origin_cover || "";
       }
 
-      // Extract duration properly
+      // Extract duration properly - TikTok API often provides duration in milliseconds
       if (data.duration) {
-        const durationSeconds = Math.floor(data.duration);
+        const durationSeconds = data.duration > 1000 ? Math.floor(data.duration / 1000) : Math.floor(data.duration);
         duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
       } else if (data.video_duration) {
-        const durationSeconds = Math.floor(data.video_duration);
+        const durationSeconds = data.video_duration > 1000 ? Math.floor(data.video_duration / 1000) : Math.floor(data.video_duration);
+        duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
+      } else if (data.music?.duration) {
+        const durationSeconds = data.music.duration > 1000 ? Math.floor(data.music.duration / 1000) : Math.floor(data.music.duration);
         duration = `${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')}`;
       } else {
         duration = "0:15"; // Default TikTok length
       }
 
-      // Extract view count properly
-      if (data.statistics?.play_count) {
-        views = formatViews(data.statistics.play_count);
-      } else if (data.play_count) {
-        views = formatViews(data.play_count);
-      } else if (data.stats?.playCount) {
-        views = formatViews(data.stats.playCount);
+      // Extract view count properly - try multiple possible fields
+      const viewCount = data.statistics?.play_count || 
+                       data.play_count || 
+                       data.stats?.playCount || 
+                       data.stats?.play_count ||
+                       data.playCount ||
+                       data.view_count ||
+                       data.viewCount ||
+                       0;
+      
+      if (viewCount > 0) {
+        views = formatViews(viewCount);
       } else {
-        views = "0"; // Show 0 if no view data
+        views = "0";
       }
 
       const videoData = {
@@ -180,36 +188,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Stream the video file
-      const fetch = (await import('node-fetch')).default;
-      
-      const response = await fetch(downloadUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+      // Return direct download URL for instant downloads
+      res.json({
+        downloadUrl: downloadUrl,
+        filename: filename,
+        contentType: contentType
       });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch video: ${response.statusText}`);
-      }
-
-      const contentLength = response.headers.get('content-length');
-
-      // Set appropriate headers for download
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-      
-      if (contentLength) {
-        res.setHeader('Content-Length', contentLength);
-      }
-
-      // Stream the response
-      if (response.body) {
-        response.body.pipe(res);
-      } else {
-        throw new Error('No response body');
-      }
 
     } catch (error) {
       res.status(500).json({ 

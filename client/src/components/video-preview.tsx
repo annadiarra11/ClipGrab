@@ -27,22 +27,16 @@ export function VideoPreview({ videoData, originalUrl }: VideoPreviewProps) {
         throw new Error(error.error || 'Download failed');
       }
 
-      // Get filename from headers
-      const contentDisposition = response.headers.get('content-disposition');
-      const filename = contentDisposition 
-        ? contentDisposition.split('filename=')[1]?.replace(/"/g, '')
-        : `tiktok_video_${quality}.${quality === 'audio' ? 'mp3' : 'mp4'}`;
-
-      // Create blob and download
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
+      const data = await response.json();
+      
+      // Create direct download link
       const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
+      a.href = data.downloadUrl;
+      a.download = data.filename;
+      a.target = '_blank';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
 
       toast({
         title: "Download started!",
