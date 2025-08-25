@@ -50,6 +50,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       data = result.result as any;
+      
+      // Temporary debug to see actual data structure
+      console.log("DEBUG - Full data keys:", Object.keys(data));
+      if (data.statistics) console.log("DEBUG - Statistics keys:", Object.keys(data.statistics));
+      if (data.stats) console.log("DEBUG - Stats keys:", Object.keys(data.stats));
+      console.log("DEBUG - Duration fields:", { duration: data.duration, video_duration: data.video_duration, music_duration: data.music?.duration });
+      console.log("DEBUG - Thumbnail fields:", { cover: data.cover, thumbnail: data.thumbnail, avatar: data.author?.avatar });
 
       // Extract video URLs - support multiple API versions
       let hdUrl = "";
