@@ -4,8 +4,8 @@ import { storage } from "./storage";
 import { videoDataSchema, downloadRequestSchema } from "@shared/schema";
 import { z } from "zod";
 
-// TikTok API library - Switched to 'tiktok-dl' for potentially better reliability
-import { tiktokdl } from "tiktok-dl";
+// TikTok API library - Using '@tobyg74/tiktok-api-dl'
+import { Downloader } from "@tobyg74/tiktok-api-dl";
 
 // Helper to safely get nested property with a default value
 const getProp = (obj: any, path: string, defaultValue: any = undefined) => {
@@ -115,30 +115,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       //   return res.json(cached);
       // }
 
-      // Use the new tiktokdl library
+      // Use the new Downloader library
       let result;
       try {
-        result = await tiktokdl(url, {
-          // No versioning needed for tiktok-dl, it handles internal API versions
-          hd: true, // Request HD quality directly if available
+        result = await Downloader(url, {
+          version: "v1", // Required for this API
         });
       } catch (error) {
-        console.error("Error from tiktokdl library:", error);
+        console.error("Error from Downloader library:", error);
         return res.status(500).json({
           error:
             "Failed to communicate with TikTok API. Please try again later.",
         });
       }
 
-      if (!result || !result.result || result.result.length === 0) {
+      if (!result || !result.result) {
         return res.status(400).json({
           error:
-            "Failed to extract video data. Please check the URL and try again. (No results from tiktok-dl)",
+            "Failed to extract video data. Please check the URL and try again. (No results from API)",
         });
       }
 
-      // tiktok-dl usually returns an array of results, take the first one
-      const data = result.result[0] as any;
+      // The Downloader API returns a different structure
+      const data = result.result as any;
 
       // Extract video URLs - tiktok-dl often provides direct URLs
       let hdUrl =
